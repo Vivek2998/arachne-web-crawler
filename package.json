@@ -1,0 +1,27 @@
+{
+  "name": "arachne-web-crawler",
+  "version": "1.0.0",
+  "description": "A real web crawler with a living, procedurally animated spider that walks across every page it crawls.",
+  "type": "module",
+  "author": "Vivek Kumar",
+  "license": "MIT",
+  "scripts": {
+    "dev": "concurrently -k -n server,client -c magenta,cyan \"node --watch server/index.js\" \"vite\"",
+    "build": "tsc --noEmit -p client && vite build",
+    "start": "NODE_ENV=production node server/index.js",
+    "typecheck": "tsc --noEmit -p client"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "cheerio": "^1.2.0",
+    "express": "^5.2.1",
+    "robots-parser": "^3.0.1"
+  },
+  "devDependencies": {
+    "concurrently": "^10.0.5",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.2"
+  }
+}

@@ -1,0 +1,183 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>Arachne — Visual Web Crawler</title>
+    <meta name="description" content="A concurrent, polite web crawler with a living visual: every worker is a spider walking the pages it crawls." />
+    <meta name="theme-color" content="#05040a" />
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;600&family=Space+Grotesk:wght@400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
+  </head>
+  <body>
+    <canvas id="bg" aria-hidden="true"></canvas>
+
+    <div class="app">
+      <header class="topbar">
+        <a class="brand" href="/" aria-label="Arachne home">
+          <svg class="brand-mark" viewBox="0 0 48 48" aria-hidden="true">
+            <g fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M20 21 12 13 6 17M20 24 9 22 4 28M20 27 10 31 7 39M21 29 15 37 15 44" />
+              <path d="M28 21 36 13 42 17M28 24 39 22 44 28M28 27 38 31 41 39M27 29 33 37 33 44" />
+            </g>
+            <rect x="18.5" y="17" width="11" height="12" rx="3" fill="#05040a" stroke="currentColor" stroke-width="2.2" />
+            <ellipse cx="24" cy="35" rx="6" ry="7" fill="#05040a" stroke="currentColor" stroke-width="2.2" />
+            <circle cx="24" cy="23" r="1.8" fill="#ff3d9a" />
+          </svg>
+          <span class="brand-name">ARACHNE</span>
+          <span class="brand-sub">web crawler</span>
+        </a>
+
+        <form id="crawl-form" class="omnibox" autocomplete="off">
+          <svg class="omni-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M3 12h18M12 3c2.8 3 2.8 15 0 18M12 3c-2.8 3-2.8 15 0 18" fill="none" stroke="currentColor" stroke-width="1.6"/></svg>
+          <input id="url" name="url" type="text" inputmode="url" placeholder="Paste any website URL — e.g. books.toscrape.com" spellcheck="false" aria-label="Website URL" />
+          <kbd class="omni-kbd">/</kbd>
+          <button id="btn-settings" type="button" class="icon-btn" title="Crawler settings" aria-label="Crawler settings">
+            <svg viewBox="0 0 24 24"><path d="M4 7h10M18 7h2M4 17h4M12 17h8" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><circle cx="16" cy="7" r="2.2" fill="none" stroke="currentColor" stroke-width="1.8"/><circle cx="10" cy="17" r="2.2" fill="none" stroke="currentColor" stroke-width="1.8"/></svg>
+          </button>
+          <button id="btn-go" type="submit" class="btn-primary"><span class="btn-label">Release</span><span class="btn-glow" aria-hidden="true"></span></button>
+        </form>
+
+        <div class="controls">
+          <button id="btn-pause" class="icon-btn" title="Pause" aria-label="Pause" hidden>
+            <svg viewBox="0 0 24 24"><path d="M8 5v14M16 5v14" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/></svg>
+          </button>
+          <button id="btn-stop" class="icon-btn danger" title="Stop" aria-label="Stop" hidden>
+            <svg viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2" fill="currentColor"/></svg>
+          </button>
+          <div class="menu">
+            <button id="btn-export" class="btn-ghost" disabled aria-haspopup="true" aria-expanded="false">
+              Export
+              <svg viewBox="0 0 24 24" width="14" height="14"><path d="m6 9 6 6 6-6" fill="none" stroke="currentColor" stroke-width="2"/></svg>
+            </button>
+            <div id="export-menu" class="menu-pop" hidden>
+              <a data-fmt="json" download>JSON <small>full report</small></a>
+              <a data-fmt="csv" download>CSV <small>spreadsheet</small></a>
+              <a data-fmt="xml" download>sitemap.xml <small>for search engines</small></a>
+            </div>
+          </div>
+        </div>
+      </header>
+
+      <main class="layout">
+        <section class="stage" id="stage" aria-label="Crawler visualisation">
+          <div class="sheet-host" id="sheet-host"></div>
+
+          <div class="addr" id="addr">
+            <span class="live-dot" id="live-dot"></span>
+            <span class="addr-url" id="addr-url">arachne://idle</span>
+            <span class="chip" id="addr-status" hidden></span>
+            <span class="chip ghost" id="addr-backlog" hidden></span>
+          </div>
+
+          <div class="hud" id="hud">
+            <div class="hud-progress"><div class="hud-bar" id="hud-bar"></div></div>
+            <div class="hud-stats">
+              <div class="stat"><b id="s-crawled">0</b><span>pages</span></div>
+              <div class="stat"><b id="s-queued">0</b><span>queued</span></div>
+              <div class="stat"><b id="s-links">0</b><span>links</span></div>
+              <div class="stat"><b id="s-errors">0</b><span>errors</span></div>
+              <div class="stat"><b id="s-avg">–</b><span>avg ms</span></div>
+              <div class="stat"><b id="s-rate">–</b><span>pages/s</span></div>
+              <div class="stat"><b id="s-time">0:00</b><span>elapsed</span></div>
+              <button class="pace" id="btn-pace" title="Animation speed">1×</button>
+            </div>
+          </div>
+        </section>
+
+        <aside class="panel" id="panel">
+          <nav class="tabs" role="tablist">
+            <button role="tab" class="tab active" data-tab="feed" id="tab-feed">Live <span class="tab-count" id="c-feed">0</span></button>
+            <button role="tab" class="tab" data-tab="map">Map <span class="tab-count" id="c-map">0</span></button>
+            <button role="tab" class="tab" data-tab="pages">Pages <span class="tab-count" id="c-pages">0</span></button>
+            <button role="tab" class="tab" data-tab="issues">Issues <span class="tab-count" id="c-issues">0</span></button>
+            <button class="icon-btn small expand" id="btn-expand" title="Expand panel" aria-label="Expand panel">
+              <svg viewBox="0 0 24 24"><path d="M14 4h6v6M10 20H4v-6M20 4l-7 7M4 20l7-7" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+            </button>
+          </nav>
+
+          <div class="tab-body active" data-body="feed">
+            <div class="feed-legend">
+              <span><i style="--c: var(--cyan)"></i>new internal</span>
+              <span><i style="--c: var(--violet)"></i>seen internal</span>
+              <span><i style="--c: var(--magenta)"></i>external</span>
+              <span><i style="--c: var(--amber)"></i>asset</span>
+            </div>
+            <div class="feed" id="feed" aria-live="polite">
+              <div class="empty" id="feed-empty">Links torn from pages land here.</div>
+            </div>
+          </div>
+
+          <div class="tab-body" data-body="map">
+            <div class="graph-wrap">
+              <canvas id="graph"></canvas>
+              <div class="graph-tip" id="graph-tip" hidden></div>
+              <div class="graph-legend">
+                <span><i style="--c: var(--cyan)"></i>2xx</span>
+                <span><i style="--c: var(--amber)"></i>3xx</span>
+                <span><i style="--c: var(--red)"></i>4xx / 5xx / error</span>
+                <span class="muted">scroll to zoom · drag to pan · double-click to refit</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="tab-body" data-body="pages">
+            <div class="pages-tools">
+              <input id="pages-q" type="search" placeholder="Filter by URL or title…" aria-label="Filter pages" />
+              <div class="chips" id="pages-filter">
+                <button class="chip-btn active" data-f="all">All</button>
+                <button class="chip-btn" data-f="ok">2xx</button>
+                <button class="chip-btn" data-f="redir">3xx</button>
+                <button class="chip-btn" data-f="bad">4xx+</button>
+              </div>
+            </div>
+            <div class="pages-list" id="pages-list"><div class="empty">No pages yet.</div></div>
+          </div>
+
+          <div class="tab-body" data-body="issues">
+            <div class="issues-list" id="issues-list"><div class="empty">Audit findings show up here.</div></div>
+          </div>
+        </aside>
+      </main>
+    </div>
+
+    <canvas id="fx" aria-hidden="true"></canvas>
+
+    <dialog id="settings" class="dlg">
+      <form method="dialog" id="settings-form">
+        <header class="dlg-head">
+          <h2>Crawler settings</h2>
+          <button class="icon-btn small" value="cancel" aria-label="Close">✕</button>
+        </header>
+        <div class="grid">
+          <label>Max pages <input name="maxPages" type="number" min="1" max="5000" /></label>
+          <label>Max depth <input name="maxDepth" type="number" min="0" max="20" /></label>
+          <label>Spiders (concurrency) <input name="concurrency" type="number" min="1" max="8" /></label>
+          <label>Delay between requests (ms) <input name="delayMs" type="number" min="0" max="10000" step="10" /></label>
+          <label>Timeout (ms) <input name="timeoutMs" type="number" min="2000" max="60000" step="500" /></label>
+          <label class="wide">User-Agent <input name="userAgent" type="text" /></label>
+          <label class="check"><input name="respectRobots" type="checkbox" /> Respect robots.txt</label>
+          <label class="check"><input name="useSitemap" type="checkbox" /> Seed from sitemap.xml</label>
+          <label class="check"><input name="includeSubdomains" type="checkbox" /> Include subdomains</label>
+        </div>
+        <footer class="dlg-foot">
+          <button type="button" class="btn-ghost" id="settings-reset">Reset defaults</button>
+          <button class="btn-primary small" value="save">Save</button>
+        </footer>
+      </form>
+    </dialog>
+
+    <dialog id="details" class="dlg wide">
+      <div id="details-body"></div>
+    </dialog>
+
+    <div class="toasts" id="toasts" aria-live="polite"></div>
+
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
