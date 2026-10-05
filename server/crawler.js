@@ -1,4 +1,5 @@
 import { EventEmitter } from 'node:events';
+import zlib from 'node:zlib';
 import robotsParser from 'robots-parser';
 import * as cheerio from 'cheerio';
 import { normalizeUrl, sameScope, isAssetUrl, assertPublicHost } from './url-utils.js';
@@ -6,6 +7,8 @@ import { extractPage } from './extract.js';
 import { SANDBOX_HOST, sandboxFetch } from './sandbox.js';
 
 const ARCHIVE_ORIGIN = 'https://web.archive.org';
+const CC_INDEX = 'https://index.commoncrawl.org';
+const CC_DATA = 'https://data.commoncrawl.org';
 const BLOCK_STATUSES = new Set([401, 403, 406, 429, 451, 503, 520, 521, 522, 523, 524, 525, 526]);
 
 const MAX_BYTES = 6 * 1024 * 1024;
@@ -236,7 +239,7 @@ export class Crawler extends EventEmitter {
   }
 
   /** fetch with timeout, manual redirect following and SSRF checks at every hop */
-  async request(url, { accept = 'text/html,application/xhtml+xml;q=0.9,*/*;q=0.5', method = 'GET' } = {}) {
+  async request(url, { accept = 'text/html,application/xhtml+xml;q=0.9,*/*;q=0.5', method = 'GET', headers = {}, timeoutMs } = {}) {
     let current = url;
     for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
       if (new URL(current).hostname === SANDBOX_HOST) {
@@ -251,7 +254,7 @@ export class Crawler extends EventEmitter {
       }
       await assertPublicHost(current);
       const ctrl = new AbortController();
-      const timer = setTimeout(() => ctrl.abort(new Error('Timed out')), this.opts.timeoutMs);
+      const timer = setTimeout(() => ctrl.abort(new Error('Timed out')), timeoutMs ?? this.opts.timeoutMs);
       const onStop = () => ctrl.abort(new Error('Stopped'));
       this.abort.signal.addEventListener('abort', onStop, { once: true });
       let res;
@@ -260,7 +263,7 @@ export class Crawler extends EventEmitter {
           method,
           redirect: 'manual',
           signal: ctrl.signal,
-          headers: { 'user-agent': this.opts.userAgent, accept, 'accept-language': 'en;q=0.9,*;q=0.5' },
+          headers: { 'user-agent': this.opts.userAgent, accept, 'accept-language': 'en;q=0.9,*;q=0.5', ...headers },
         });
       } finally {
         clearTimeout(timer);
@@ -332,17 +335,40 @@ export class Crawler extends EventEmitter {
    * Wayback Machine for the original, un-rewritten HTML, so links still
    * point at the real site and the crawl graph stays intact.
    */
-  async fetchArchive(url) {
-    await this.politeWait(ARCHIVE_ORIGIN, 0.9);
+  /** Try every public web archive we know, newest-first. */
+  async fetchArchive(url, depth = 1) {
     if (!this.active) throw new Error('Stopped');
-    let res = await this.request(`${ARCHIVE_ORIGIN}/web/2id_/${url}`);
+    // once Common Crawl has mapped this site, it is the fast path
+    const site = this.ccSite ? await this.ccSite : null;
+    if (site?.map.has(normalizeUrl(url))) {
+      const res = await this.fetchCommonCrawl(url, depth).catch(() => null);
+      if (res) return res;
+    }
+    if (!(this.waybackDownUntil > Date.now())) {
+      try {
+        const res = await this.fetchWayback(url);
+        if (res) return res;
+      } catch (e) {
+        if (this.waybackDownUntil > Date.now()) return this.fetchCommonCrawl(url, depth).catch(() => null);
+        // archive.org is often overloaded: skip it for a while instead of waiting on it every page
+        this.waybackDownUntil = Date.now() + 120_000;
+        this.emit('log', { level: 'info', message: `Internet Archive unreachable (${e?.cause?.code ?? e.message}), trying Common Crawl` });
+      }
+    }
+    return this.fetchCommonCrawl(url, depth).catch(() => null);
+  }
+
+  /** Wayback Machine: `id_` snapshots return the original, un-rewritten HTML. */
+  async fetchWayback(url) {
+    await this.politeWait(ARCHIVE_ORIGIN, 0.9);
+    let res = await this.request(`${ARCHIVE_ORIGIN}/web/2id_/${url}`, { timeoutMs: 9000 });
     if (res.status >= 400) {
       // the newest capture is often the bot wall itself: ask the CDX index
       // for the most recent capture that was a real 200 page
       res.body?.cancel().catch(() => {});
       const cdx = await this.request(
         `${ARCHIVE_ORIGIN}/cdx/search/cdx?url=${encodeURIComponent(url)}&filter=statuscode:200&fl=timestamp,original&limit=-1`,
-        { accept: 'text/plain' },
+        { accept: 'text/plain', timeoutMs: 12_000 },
       );
       const line = cdx.ok ? (await cdx.text()).trim().split('\n').pop() : '';
       const [ts, original] = line.split(' ');
@@ -356,7 +382,121 @@ export class Crawler extends EventEmitter {
       return null;
     }
     res.archivedAt = m[1];
+    res.archiveSource = 'Internet Archive';
     res.finalUrl = normalizeUrl(m[2].replace(/^(https?:)\/+/, '$1//')) ?? url;
+    return res;
+  }
+
+  async ccCollections() {
+    this.ccCols ??= (async () => {
+      const r = await this.request(`${CC_INDEX}/collinfo.json`, { accept: 'application/json', timeoutMs: 20_000 });
+      return r.ok ? (await r.json()).slice(0, 4).map((c) => c.id) : [];
+    })().catch(() => []);
+    const cols = await this.ccCols;
+    if (!cols.length) this.ccCols = null;
+    return cols;
+  }
+
+  async ccQuery(col, params) {
+    // the public index is busy and flaky (502/504/400 then fine): retry with back-off
+    let r = null;
+    for (let attempt = 0; attempt < 3 && this.active; attempt++) {
+      await this.politeWait(CC_INDEX, 1);
+      r = await this.request(`${CC_INDEX}/${col}-index?${params}&output=json&filter=status:200`, { accept: 'application/json', timeoutMs: 40_000 }).catch(() => null);
+      if (r?.ok || r?.status === 404) break;
+      r?.body?.cancel().catch(() => {});
+      r = null;
+      await sleep(1500 * (attempt + 1));
+    }
+    if (!r?.ok) {
+      r?.body?.cancel().catch(() => {});
+      return [];
+    }
+    const out = [];
+    for (const line of (await r.text()).split('\n')) {
+      try {
+        if (line.trim()) out.push(JSON.parse(line));
+      } catch {
+        /* skip malformed index lines */
+      }
+    }
+    return out;
+  }
+
+  /**
+   * Build a map of every archived HTML page of this host once (one prefix
+   * query), so the rest of the crawl only needs cheap data fetches.
+   */
+  async ccSiteMap(url) {
+    if (this.ccSite && (await this.ccSite) === null && Date.now() - this.ccSiteAt > 30_000) this.ccSite = null; // retry a failed lookup later
+    this.ccSiteAt ??= Date.now();
+    this.ccSite ??= (async () => {
+      this.ccSiteAt = Date.now();
+      const host = new URL(url).hostname;
+      for (const col of await this.ccCollections()) {
+        const recs = await this.ccQuery(col, `url=${encodeURIComponent(host + '/*')}&limit=3000`).catch(() => []);
+        const map = new Map();
+        for (const r of recs) {
+          if (!/html/.test(r['mime-detected'] ?? r.mime ?? '')) continue;
+          const key = normalizeUrl(r.url);
+          if (key && (!map.has(key) || map.get(key).timestamp < r.timestamp)) map.set(key, r);
+        }
+        if (map.size) {
+          this.emit('log', { level: 'info', message: `Common Crawl ${col} holds ${map.size} archived pages of ${host}` });
+          // archived pages are guaranteed hits: queue them like a sitemap
+          let seeded = 0;
+          for (const u of map.keys()) {
+            if (seeded >= this.opts.maxPages * 2) break;
+            if (sameScope(u, this.startUrl, this.opts.includeSubdomains) && !isAssetUrl(u) && this.enqueue(u, 1, null)) seeded++;
+          }
+          return { col, map };
+        }
+      }
+      return null;
+    })().catch(() => null);
+    return this.ccSite;
+  }
+
+  /** Common Crawl: look up the WARC record, fetch just its byte range, unwrap it. */
+  async fetchCommonCrawl(url, depth = 1) {
+    const site = await this.ccSiteMap(url);
+    const key = normalizeUrl(url);
+    let rec = site?.map.get(key) ?? site?.map.get(key.replace(/\/$/, '')) ?? site?.map.get(key + '/');
+    if (!rec && site && depth !== 0) return null; // the site map is complete enough: fail fast
+    if (!rec) {
+      const cols = site ? [site.col] : (await this.ccCollections()).slice(0, 2);
+      for (const col of cols) {
+        const hits = await this.ccQuery(col, `url=${encodeURIComponent(url)}&limit=5`).catch(() => []);
+        rec = hits.sort((a, b) => (a.timestamp < b.timestamp ? 1 : -1))[0];
+        if (rec) break;
+      }
+    }
+    if (!rec?.filename) return null;
+    await this.politeWait(CC_DATA, 0.25);
+    const start = Number(rec.offset);
+    const end = start + Number(rec.length) - 1;
+    const r = await this.request(`${CC_DATA}/${rec.filename}`, { accept: '*/*', headers: { range: `bytes=${start}-${end}` }, timeoutMs: 30_000 });
+    if (r.status !== 206 && r.status !== 200) {
+      r.body?.cancel().catch(() => {});
+      return null;
+    }
+    const raw = zlib.gunzipSync(Buffer.from(await r.arrayBuffer()));
+    // WARC headers, blank line, HTTP headers, blank line, payload
+    const warcEnd = raw.indexOf('\r\n\r\n');
+    const httpEnd = raw.indexOf('\r\n\r\n', warcEnd + 4);
+    if (warcEnd < 0 || httpEnd < 0) return null;
+    const httpHead = raw.subarray(warcEnd + 4, httpEnd).toString('latin1').split('\r\n');
+    const status = Number(/\s(\d{3})/.exec(httpHead[0])?.[1] ?? 200);
+    const headers = {};
+    for (const h of httpHead.slice(1)) {
+      const i = h.indexOf(':');
+      const k = h.slice(0, i).trim().toLowerCase();
+      if (k === 'content-type' || k === 'server') headers[k] = h.slice(i + 1).trim();
+    }
+    const res = new Response(raw.subarray(httpEnd + 4), { status: status >= 200 && status < 600 ? status : 200, headers });
+    res.finalUrl = normalizeUrl(rec.url) ?? url;
+    res.archivedAt = rec.timestamp;
+    res.archiveSource = 'Common Crawl';
     return res;
   }
 
@@ -364,7 +504,7 @@ export class Crawler extends EventEmitter {
     if (this.announced) return;
     this.announced = true;
     this.emit('mode', { mode: 'archive', reason, url });
-    this.emit('log', { level: 'warn', message: `Live site refused the spiders (${reason}). Asking the Internet Archive for its copy…` });
+    this.emit('log', { level: 'warn', message: `Live site refused the spiders (${reason}). Asking public web archives (Internet Archive, Common Crawl)…` });
   }
 
   noteArchive(url, reason, depth) {
@@ -372,9 +512,9 @@ export class Crawler extends EventEmitter {
     if (!this.archiveMode && (depth === 0 || this.blockedLive >= 2)) {
       this.archiveMode = true;
       this.announceArchive(reason, url);
-      this.emit('log', { level: 'info', message: 'Time-travel engaged: crawling the Internet Archive copy of this site.' });
+      this.emit('log', { level: 'info', message: 'Time-travel engaged: crawling the archived copy of this site.' });
     } else {
-      this.emit('log', { level: 'info', message: `${url} refused (${reason}), used its Internet Archive copy` });
+      this.emit('log', { level: 'info', message: `${url} refused (${reason}), used its archived copy` });
     }
   }
 
@@ -400,8 +540,8 @@ export class Crawler extends EventEmitter {
     let attempt = 0;
     while (true) {
       try {
-        let res = this.archiveMode ? await this.fetchArchive(url) : await this.request(url);
-        if (!res) throw new Error('Not in the Internet Archive');
+        let res = this.archiveMode ? await this.fetchArchive(url, depth) : await this.request(url);
+        if (!res) throw new Error('No archived copy found');
         if (!res.archivedAt && (res.status === 429 || res.status === 503) && attempt < 2) {
           res.body?.cancel().catch(() => {});
           const ra = Number(res.headers.get('retry-after'));
@@ -412,7 +552,7 @@ export class Crawler extends EventEmitter {
         if (!res.archivedAt && this.opts.archiveFallback && this.isBlocked(res)) {
           // refused (bot wall, auth, rate limit): try the public archived copy
           if (depth === 0) this.announceArchive(`HTTP ${res.status}`, url);
-          const arch = await this.fetchArchive(url).catch(() => null);
+          const arch = await this.fetchArchive(url, depth).catch(() => null);
           if (!arch) res.archiveMissed = true;
           if (arch) {
             this.noteArchive(url, `HTTP ${res.status}`, depth);
@@ -450,7 +590,7 @@ export class Crawler extends EventEmitter {
         }
         if (this.opts.archiveFallback && !this.archiveMode && !/Blocked|Stopped|Archive/.test(message)) {
           if (depth === 0) this.announceArchive(message, url);
-          const arch = await this.fetchArchive(url).catch(() => null);
+          const arch = await this.fetchArchive(url, depth).catch(() => null);
           if (arch) {
             this.noteArchive(url, message, depth);
             const contentType = arch.headers.get('content-type') ?? '';
@@ -497,7 +637,7 @@ export class Crawler extends EventEmitter {
     const issues = res.status >= 400 ? [] : [...(extracted?.issues ?? [])];
     if (res.archivedAt) {
       const d = res.archivedAt;
-      issues.push({ severity: 'info', code: 'archived', message: `Served from Internet Archive snapshot of ${d.slice(0, 4)}-${d.slice(4, 6)}-${d.slice(6, 8)}` });
+      issues.push({ severity: 'info', code: 'archived', message: `Served from ${res.archiveSource ?? 'archive'} snapshot of ${d.slice(0, 4)}-${d.slice(4, 6)}-${d.slice(6, 8)}` });
     }
     if (depth === 0 && res.status === 404 && new URL(url).pathname !== '/') {
       const home = new URL(url).origin + '/';
@@ -537,6 +677,7 @@ export class Crawler extends EventEmitter {
         asset: links.filter((l) => l.kind === 'asset').length,
       },
       archived: res.archivedAt ?? null,
+      archiveSource: res.archiveSource ?? null,
       archiveMissed: res.archiveMissed ?? false,
       issues,
     };

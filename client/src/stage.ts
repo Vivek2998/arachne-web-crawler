@@ -924,7 +924,7 @@ export function buildSheet(p: PageEvent): HTMLElement {
   );
   if (p.archived) {
     const d = p.archived;
-    meta.prepend(el('span', 'm-archive', `⟲ archived ${d.slice(0, 4)}-${d.slice(4, 6)}-${d.slice(6, 8)}`));
+    meta.prepend(el('span', 'm-archive', `⟲ archived ${d.slice(0, 4)}-${d.slice(4, 6)}-${d.slice(6, 8)}${p.archiveSource ? ` · ${p.archiveSource}` : ''}`));
   }
   if (p.status === 0) meta.firstElementChild!.textContent = 'GET ERR';
   sheet.appendChild(meta);
@@ -984,9 +984,9 @@ function buildBlocked(sheet: HTMLElement, p: PageEvent): HTMLElement {
     `${guard ? `Guarded by ${guard}. ` : ''}This site tells crawlers to keep out (HTTP ${p.status}). Arachne respects that and does not try to sneak past bot protection.`;
   sheet.appendChild(el('p', 'b b-p', why));
   if (p.archiveMissed) {
-    sheet.appendChild(el('p', 'b b-p fw-hint', 'Time-travel tried too: the Internet Archive has no usable copy of this page right now. Try another site, or the built-in sandbox from the home screen.'));
+    sheet.appendChild(el('p', 'b b-p fw-hint', 'Time-travel tried too: neither the Internet Archive nor Common Crawl had a usable copy of this page right now (they are busy public services; trying again later can work). Or try the built-in sandbox from the home screen.'));
   } else if (p.status !== 404) {
-    sheet.appendChild(el('p', 'b b-p fw-hint', 'Tip: with time-travel on (Settings), the spiders ask the Internet Archive for a public, older copy of a site that refuses them. Or try the built-in sandbox from the home screen.'));
+    sheet.appendChild(el('p', 'b b-p fw-hint', 'Tip: with time-travel on (Settings), the spiders look for a public archived copy (Internet Archive, Common Crawl) of a site that refuses them. Or try the built-in sandbox from the home screen.'));
   }
   if (p.snapshot.length) {
     sheet.appendChild(el('h2', 'b b-h2', 'Found on the error page'));

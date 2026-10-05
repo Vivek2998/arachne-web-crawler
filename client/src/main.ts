@@ -178,14 +178,13 @@ function onStats(s: Stats) {
   $('#s-rate').textContent = s.rate ? s.rate.toFixed(1) : '–';
   $('#s-time').textContent = fmtTime(s.elapsed);
   $('#hud-bar').style.width = `${Math.min(100, ((s.crawled + s.failed) / Math.max(1, s.maxPages)) * 100)}%`;
-  btnPause.classList.toggle('is-paused', s.state === 'paused');
-  btnPause.title = s.state === 'paused' ? 'Resume' : 'Pause';
+  setPausedUI(s.state === 'paused');
 }
 
 function onMode(m: ModeEvent) {
   if (m.mode !== 'archive') return;
-  toast(`🕰 Site refused the spiders (${m.reason}). Asking the Internet Archive for its copy…`, 'warn');
-  stage.timeWarp('⟲ TIME-TRAVEL · INTERNET ARCHIVE');
+  toast(`🕰 Site refused the spiders (${m.reason}). Searching public web archives for its copy…`, 'warn');
+  stage.timeWarp('⟲ TIME-TRAVEL · WEB ARCHIVES');
 }
 
 function onLog(l: LogEvent) {
@@ -203,8 +202,16 @@ function onDone(d: DoneEvent) {
   $('#live-dot').classList.add('off');
 }
 
+function setPausedUI(paused: boolean) {
+  btnPause.classList.toggle('is-paused', paused);
+  btnPause.title = paused ? 'Resume the crawl' : 'Pause the crawl';
+  btnPause.querySelector('.ctrl-label')!.textContent = paused ? 'Resume' : 'Pause';
+  $('#live-dot').classList.toggle('paused', paused);
+}
+
 function setRunningUI(running: boolean) {
-  btnPause.hidden = btnStop.hidden = !running;
+  btnPause.disabled = btnStop.disabled = !running;
+  if (!running) setPausedUI(false);
   btnExport.disabled = !crawlId;
   btnGo.querySelector('.btn-label')!.textContent = running ? 'Restart' : 'Release';
   $('#live-dot').classList.toggle('off', !running);
@@ -294,7 +301,7 @@ const LABELS: Record<string, string> = {
   slow: 'Slow response (> 3 s)',
   truncated: 'Body truncated (> 6 MB)',
   'fetch-failed': 'Request failed',
-  archived: 'Read from the Internet Archive',
+  archived: 'Read from a web archive (site refused live access)',
 };
 function addIssue(i: Issue, url: string) {
   const label = LABELS[i.code] ?? (i.code.startsWith('http-') ? `HTTP ${i.code.slice(5)} responses` : i.message);
@@ -433,7 +440,12 @@ $('#crawl-form').addEventListener('submit', (e) => {
 });
 btnPause.addEventListener('click', () => {
   if (!crawlId) return;
-  control(crawlId, state === 'paused' ? 'resume' : 'pause').then((r) => (state = r.state));
+  const next = state === 'paused' ? 'resume' : 'pause';
+  setPausedUI(next === 'pause'); // instant feedback, server confirms via stats
+  control(crawlId, next).then((r) => {
+    state = r.state;
+    setPausedUI(r.state === 'paused');
+  });
 });
 btnStop.addEventListener('click', () => crawlId && control(crawlId, 'stop'));
 

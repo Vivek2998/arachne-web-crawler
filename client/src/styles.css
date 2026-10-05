@@ -567,12 +567,12 @@ button {
 
 /* ---- sheet transitions ---------------------------------------------- */
 .sheet-in {
-  animation: sheet-in 0.7s cubic-bezier(0.2, 0.8, 0.2, 1) both;
+  animation: sheet-in 0.7s cubic-bezier(0.2, 0.8, 0.2, 1) backwards;
 }
 @keyframes sheet-in {
-  from { opacity: 0; filter: blur(8px); clip-path: inset(0 0 100% 0); }
+  from { opacity: 0; filter: blur(8px); clip-path: inset(-40px -80px 100% -80px); }
   60% { filter: blur(0); }
-  to { opacity: 1; clip-path: inset(0 0 0 0); }
+  to { opacity: 1; clip-path: inset(-40px -80px -40px -80px); }
 }
 .sheet-out {
   animation: sheet-out 0.6s steps(6) both;
@@ -1570,4 +1570,70 @@ button {
   15% { opacity: 1; transform: translate(-50%, -50%) scale(1.05) rotate(1deg); }
   75% { opacity: 1; transform: translate(-50%, -50%) scale(1); }
   100% { opacity: 0; transform: translate(-50%, -60%) scale(0.96); }
+}
+
+/* ---- labelled crawl controls ------------------------------------------- */
+.ctrl-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: 38px;
+  padding: 0 14px;
+  border-radius: 10px;
+  border: 1px solid var(--line-2);
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--ink);
+  font-size: 13.5px;
+  font-weight: 500;
+  transition: background 0.2s, border-color 0.2s, color 0.2s, opacity 0.2s, transform 0.15s;
+}
+.ctrl-btn svg {
+  width: 15px;
+  height: 15px;
+}
+.ctrl-btn:hover:not(:disabled) {
+  background: rgba(94, 231, 255, 0.1);
+  border-color: rgba(94, 231, 255, 0.45);
+}
+.ctrl-btn:active:not(:disabled) {
+  transform: scale(0.96);
+}
+.ctrl-btn.danger:hover:not(:disabled) {
+  color: var(--red);
+  background: rgba(255, 77, 109, 0.1);
+  border-color: rgba(255, 77, 109, 0.5);
+}
+.ctrl-btn:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+.ctrl-btn .i-play {
+  display: none;
+}
+.ctrl-btn.is-paused {
+  color: var(--amber);
+  border-color: rgba(255, 184, 77, 0.55);
+  background: rgba(255, 184, 77, 0.1);
+  animation: paused-glow 1.6s ease-in-out infinite;
+}
+.ctrl-btn.is-paused .i-play {
+  display: block;
+}
+.ctrl-btn.is-paused .i-pause {
+  display: none;
+}
+@keyframes paused-glow {
+  50% { box-shadow: 0 0 18px -4px rgba(255, 184, 77, 0.8); }
+}
+.live-dot.paused {
+  background: var(--amber);
+  animation: none;
+}
+@media (max-width: 900px) {
+  .ctrl-btn {
+    padding: 0 10px;
+  }
+  .ctrl-btn .ctrl-label {
+    display: none;
+  }
 }

@@ -54,6 +54,7 @@ export interface PageRecord {
   error?: string;
   archived?: string | null;
   archiveMissed?: boolean;
+  archiveSource?: string | null;
 }
 
 export interface PageEvent extends PageRecord {
