@@ -1453,3 +1453,121 @@ button {
 [hidden] {
   display: none !important;
 }
+
+/* ---- refused pages: the firewall --------------------------------------- */
+.sheet .m-archive {
+  color: var(--amber);
+  border-color: rgba(255, 184, 77, 0.45);
+  background: rgba(255, 184, 77, 0.08);
+}
+.sheet.blocked h1.b {
+  color: #ffd1dc;
+}
+.firewall {
+  position: relative;
+  margin: 18px 0 26px;
+  padding: 26px 22px 22px;
+  border-radius: 16px;
+  border: 1px solid rgba(255, 77, 109, 0.35);
+  background:
+    repeating-linear-gradient(0deg, rgba(255, 77, 109, 0.06) 0 1px, transparent 1px 22px),
+    repeating-linear-gradient(90deg, rgba(255, 77, 109, 0.06) 0 1px, transparent 1px 44px),
+    radial-gradient(80% 120% at 50% 0%, rgba(255, 77, 109, 0.16), transparent 70%);
+  box-shadow: inset 0 0 60px -20px rgba(255, 77, 109, 0.6), 0 0 50px -25px rgba(255, 77, 109, 0.8);
+  text-align: center;
+  overflow: hidden;
+  animation: shield 2.8s ease-in-out infinite;
+}
+@keyframes shield {
+  50% { box-shadow: inset 0 0 80px -16px rgba(255, 77, 109, 0.8), 0 0 70px -20px rgba(255, 77, 109, 1); }
+}
+.fw-code {
+  display: flex;
+  justify-content: center;
+  gap: 0.08em;
+  margin-bottom: 14px;
+}
+.sheet .lk.fw-glyph {
+  --kc: var(--red);
+  color: #ff8fa6;
+  border: 0;
+  text-decoration: none;
+  cursor: default;
+}
+.sheet .lk.fw-digit {
+  font-family: var(--font-serif);
+  font-size: clamp(90px, 14vw, 170px);
+  line-height: 1;
+  color: #fff;
+  text-shadow: 0 0 30px rgba(255, 77, 109, 0.9), -3px 0 rgba(94, 231, 255, 0.6), 3px 0 rgba(255, 79, 176, 0.6);
+}
+.fw-bricks {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px;
+}
+.sheet .lk.fw-brick {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  padding: 4px 10px;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 77, 109, 0.45);
+  background: rgba(255, 77, 109, 0.08);
+}
+.sheet .lk.fw-glyph.is-grabbed {
+  background: var(--red);
+  color: #06050c;
+  text-shadow: none;
+}
+.sheet .lk.is-chewed {
+  opacity: 0.28;
+  filter: blur(0.6px);
+  text-decoration: line-through;
+  background: transparent;
+  transform: rotate(-4deg) translateY(3px);
+  transition: opacity 0.6s, transform 0.6s;
+}
+.sheet .fw-hint {
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  color: var(--amber);
+}
+
+/* ---- time-travel warp ---------------------------------------------------- */
+.stage.warp .sheet {
+  animation: rewind 1.5s cubic-bezier(0.6, 0, 0.2, 1) both;
+}
+@keyframes rewind {
+  0% { filter: none; transform: none; }
+  25% { filter: sepia(1) hue-rotate(-30deg) blur(2px) contrast(1.4); transform: skewX(-6deg) scale(0.98); }
+  50% { filter: sepia(0.8) hue-rotate(-50deg) blur(4px); transform: skewX(8deg) scale(1.02); opacity: 0.6; }
+  100% { filter: none; transform: none; opacity: 1; }
+}
+.warp-badge {
+  position: absolute;
+  z-index: 3;
+  left: 50%;
+  top: 46%;
+  transform: translate(-50%, -50%);
+  padding: 12px 22px;
+  border-radius: 14px;
+  font-family: var(--font-mono);
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: 0.22em;
+  color: #06050c;
+  background: linear-gradient(100deg, var(--amber), #ffd98a);
+  box-shadow: 0 0 60px rgba(255, 184, 77, 0.7);
+  pointer-events: none;
+  white-space: nowrap;
+  animation: badge 2.6s cubic-bezier(0.2, 0.9, 0.2, 1) both;
+}
+@keyframes badge {
+  0% { opacity: 0; transform: translate(-50%, -50%) scale(0.6) rotate(-4deg); }
+  15% { opacity: 1; transform: translate(-50%, -50%) scale(1.05) rotate(1deg); }
+  75% { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+  100% { opacity: 0; transform: translate(-50%, -60%) scale(0.96); }
+}

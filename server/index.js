@@ -48,6 +48,7 @@ app.post('/api/crawl', (req, res) => {
   let { url, options } = req.body ?? {};
   if (typeof url !== 'string' || !url.trim()) return res.status(400).json({ error: 'URL is required' });
   url = url.trim();
+  if (/^(sandbox|sandbox\.arachne)\/?$/i.test(url)) url = 'https://sandbox.arachne/';
   if (!/^https?:\/\//i.test(url)) url = 'https://' + url;
 
   const running = [...sessions.values()].filter((s) => s.crawler.active).length;
@@ -63,7 +64,7 @@ app.post('/api/crawl', (req, res) => {
   const session = { crawler, events: [], clients: new Set(), createdAt: Date.now() };
   sessions.set(id, session);
 
-  for (const type of ['fetch', 'page', 'fail', 'stats', 'log', 'done']) {
+  for (const type of ['fetch', 'page', 'fail', 'stats', 'log', 'mode', 'done']) {
     crawler.on(type, (data) => broadcast(session, type, data));
   }
   broadcast(session, 'init', { id, startUrl: crawler.startUrl, options: crawler.opts });

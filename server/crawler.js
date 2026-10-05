@@ -3,6 +3,10 @@ import robotsParser from 'robots-parser';
 import * as cheerio from 'cheerio';
 import { normalizeUrl, sameScope, isAssetUrl, assertPublicHost } from './url-utils.js';
 import { extractPage } from './extract.js';
+import { SANDBOX_HOST, sandboxFetch } from './sandbox.js';
+
+const ARCHIVE_ORIGIN = 'https://web.archive.org';
+const BLOCK_STATUSES = new Set([401, 403, 406, 429, 451, 503, 520, 521, 522, 523, 524, 525, 526]);
 
 const MAX_BYTES = 6 * 1024 * 1024;
 const MAX_REDIRECTS = 6;
@@ -16,6 +20,7 @@ export const DEFAULTS = {
   timeoutMs: 15_000,
   respectRobots: true,
   useSitemap: true,
+  archiveFallback: true,
   includeSubdomains: false,
   userAgent: 'ArachneBot/1.0 (+https://github.com/Vivek2998/arachne-web-crawler)',
 };
@@ -34,6 +39,7 @@ export function sanitizeOptions(input = {}) {
     timeoutMs: n(input.timeoutMs, 2000, 60_000, DEFAULTS.timeoutMs),
     respectRobots: b(input.respectRobots, DEFAULTS.respectRobots),
     useSitemap: b(input.useSitemap, DEFAULTS.useSitemap),
+    archiveFallback: b(input.archiveFallback, DEFAULTS.archiveFallback),
     includeSubdomains: b(input.includeSubdomains, DEFAULTS.includeSubdomains),
     userAgent:
       typeof input.userAgent === 'string' && input.userAgent.trim() ? input.userAgent.trim().slice(0, 200) : DEFAULTS.userAgent,
@@ -65,6 +71,8 @@ export class Crawler extends EventEmitter {
     this.wake = null;
     this.inFlight = 0;
     this.abort = new AbortController();
+    /** true once the live site refused us and we switched to the Internet Archive */
+    this.archiveMode = false;
   }
 
   enqueue(url, depth, from) {
@@ -82,7 +90,7 @@ export class Crawler extends EventEmitter {
     this.startedAt = Date.now();
     this.emit('log', { level: 'info', message: `Releasing ${this.opts.concurrency} crawler${this.opts.concurrency > 1 ? 's' : ''} on ${this.startUrl}` });
     try {
-      await assertPublicHost(this.startUrl);
+      if (new URL(this.startUrl).hostname !== SANDBOX_HOST) await assertPublicHost(this.startUrl);
     } catch (e) {
       this.emit('log', { level: 'error', message: e.message });
       return this.finish('error');
@@ -231,6 +239,16 @@ export class Crawler extends EventEmitter {
   async request(url, { accept = 'text/html,application/xhtml+xml;q=0.9,*/*;q=0.5', method = 'GET' } = {}) {
     let current = url;
     for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
+      if (new URL(current).hostname === SANDBOX_HOST) {
+        const res = await sandboxFetch(current);
+        if (res.status >= 300 && res.status < 400 && res.headers.get('location')) {
+          current = normalizeUrl(res.headers.get('location'), current);
+          continue;
+        }
+        res.finalUrl = current;
+        res.redirected_ = hop > 0;
+        return res;
+      }
       await assertPublicHost(current);
       const ctrl = new AbortController();
       const timer = setTimeout(() => ctrl.abort(new Error('Timed out')), this.opts.timeoutMs);
@@ -250,7 +268,9 @@ export class Crawler extends EventEmitter {
       }
       if (res.status >= 300 && res.status < 400 && res.headers.get('location')) {
         res.body?.cancel().catch(() => {});
-        const next = normalizeUrl(res.headers.get('location'), current);
+        const loc = res.headers.get('location');
+        // Wayback redirects embed a full URL in the path; keep it intact
+        const next = current.startsWith(ARCHIVE_ORIGIN) ? new URL(loc, current).toString() : normalizeUrl(loc, current);
         if (!next) throw new Error('Bad redirect');
         current = next;
         continue;
@@ -303,6 +323,61 @@ export class Crawler extends EventEmitter {
     }
   }
 
+  isBlocked(res) {
+    return BLOCK_STATUSES.has(res.status) || res.headers.get('cf-mitigated') === 'challenge';
+  }
+
+  /**
+   * Fetch the latest Internet Archive snapshot of a URL. `id_` asks the
+   * Wayback Machine for the original, un-rewritten HTML, so links still
+   * point at the real site and the crawl graph stays intact.
+   */
+  async fetchArchive(url) {
+    await this.politeWait(ARCHIVE_ORIGIN, 0.9);
+    if (!this.active) throw new Error('Stopped');
+    let res = await this.request(`${ARCHIVE_ORIGIN}/web/2id_/${url}`);
+    if (res.status >= 400) {
+      // the newest capture is often the bot wall itself: ask the CDX index
+      // for the most recent capture that was a real 200 page
+      res.body?.cancel().catch(() => {});
+      const cdx = await this.request(
+        `${ARCHIVE_ORIGIN}/cdx/search/cdx?url=${encodeURIComponent(url)}&filter=statuscode:200&fl=timestamp,original&limit=-1`,
+        { accept: 'text/plain' },
+      );
+      const line = cdx.ok ? (await cdx.text()).trim().split('\n').pop() : '';
+      const [ts, original] = line.split(' ');
+      if (!/^\d{14}$/.test(ts ?? '') || !original) return null;
+      await this.politeWait(ARCHIVE_ORIGIN, 0.9);
+      res = await this.request(`${ARCHIVE_ORIGIN}/web/${ts}id_/${original}`);
+    }
+    const m = /\/web\/(\d{14})id_\/(.+)$/.exec(res.finalUrl);
+    if (!m || res.status >= 400) {
+      res.body?.cancel().catch(() => {});
+      return null;
+    }
+    res.archivedAt = m[1];
+    res.finalUrl = normalizeUrl(m[2].replace(/^(https?:)\/+/, '$1//')) ?? url;
+    return res;
+  }
+
+  announceArchive(reason, url) {
+    if (this.announced) return;
+    this.announced = true;
+    this.emit('mode', { mode: 'archive', reason, url });
+    this.emit('log', { level: 'warn', message: `Live site refused the spiders (${reason}). Asking the Internet Archive for its copy…` });
+  }
+
+  noteArchive(url, reason, depth) {
+    this.blockedLive = (this.blockedLive ?? 0) + 1;
+    if (!this.archiveMode && (depth === 0 || this.blockedLive >= 2)) {
+      this.archiveMode = true;
+      this.announceArchive(reason, url);
+      this.emit('log', { level: 'info', message: 'Time-travel engaged: crawling the Internet Archive copy of this site.' });
+    } else {
+      this.emit('log', { level: 'info', message: `${url} refused (${reason}), used its Internet Archive copy` });
+    }
+  }
+
   async process(job, worker) {
     const id = this.nextId++;
     const { url, depth } = job;
@@ -317,7 +392,7 @@ export class Crawler extends EventEmitter {
         return;
       }
     }
-    await this.politeWait(origin, robots?.getCrawlDelay?.(this.opts.userAgent));
+    if (!this.archiveMode) await this.politeWait(origin, robots?.getCrawlDelay?.(this.opts.userAgent));
     if (!this.active) return;
 
     this.emit('fetch', { id, url, depth, worker, from: job.from });
@@ -325,13 +400,25 @@ export class Crawler extends EventEmitter {
     let attempt = 0;
     while (true) {
       try {
-        const res = await this.request(url);
-        if ((res.status === 429 || res.status === 503) && attempt < 2) {
+        let res = this.archiveMode ? await this.fetchArchive(url) : await this.request(url);
+        if (!res) throw new Error('Not in the Internet Archive');
+        if (!res.archivedAt && (res.status === 429 || res.status === 503) && attempt < 2) {
           res.body?.cancel().catch(() => {});
           const ra = Number(res.headers.get('retry-after'));
           await sleep(Number.isFinite(ra) && ra > 0 ? Math.min(ra, 10) * 1000 : 800 * 2 ** attempt);
           attempt++;
           continue;
+        }
+        if (!res.archivedAt && this.opts.archiveFallback && this.isBlocked(res)) {
+          // refused (bot wall, auth, rate limit): try the public archived copy
+          if (depth === 0) this.announceArchive(`HTTP ${res.status}`, url);
+          const arch = await this.fetchArchive(url).catch(() => null);
+          if (!arch) res.archiveMissed = true;
+          if (arch) {
+            this.noteArchive(url, `HTTP ${res.status}`, depth);
+            res.body?.cancel().catch(() => {});
+            res = arch;
+          }
         }
         const ttfb = performance.now() - t0;
         const contentType = res.headers.get('content-type') ?? '';
@@ -339,7 +426,7 @@ export class Crawler extends EventEmitter {
         let extracted = null;
         let bytes = Number(res.headers.get('content-length')) || 0;
         let truncated = false;
-        if (isHtml && res.status < 400) {
+        if (isHtml) {
           const body = await this.readBody(res);
           bytes = body.buf.byteLength;
           truncated = body.truncated;
@@ -360,6 +447,19 @@ export class Crawler extends EventEmitter {
           attempt++;
           await sleep(600);
           continue;
+        }
+        if (this.opts.archiveFallback && !this.archiveMode && !/Blocked|Stopped|Archive/.test(message)) {
+          if (depth === 0) this.announceArchive(message, url);
+          const arch = await this.fetchArchive(url).catch(() => null);
+          if (arch) {
+            this.noteArchive(url, message, depth);
+            const contentType = arch.headers.get('content-type') ?? '';
+            const body = await this.readBody(arch);
+            const extracted = extractPage(this.decode(body.buf, contentType), arch.finalUrl, { startUrl: this.startUrl, includeSubdomains: this.opts.includeSubdomains });
+            const timeMs = Math.round(performance.now() - t0);
+            this.recordPage({ id, job, worker, res: arch, ttfb: timeMs, timeMs, bytes: body.buf.byteLength, contentType, extracted, truncated: body.truncated });
+            return;
+          }
         }
         this.stats.failed++;
         const record = { id, url, depth, status: 0, error: message, title: '', timeMs: Math.round(performance.now() - t0), from: job.from };
@@ -393,7 +493,16 @@ export class Crawler extends EventEmitter {
     this.stats.bytes += bytes;
     this.stats.totalMs += timeMs;
 
-    const issues = [...(extracted?.issues ?? [])];
+    // error pages are still read (their navigation keeps the crawl alive), but not audited
+    const issues = res.status >= 400 ? [] : [...(extracted?.issues ?? [])];
+    if (res.archivedAt) {
+      const d = res.archivedAt;
+      issues.push({ severity: 'info', code: 'archived', message: `Served from Internet Archive snapshot of ${d.slice(0, 4)}-${d.slice(4, 6)}-${d.slice(6, 8)}` });
+    }
+    if (depth === 0 && res.status === 404 && new URL(url).pathname !== '/') {
+      const home = new URL(url).origin + '/';
+      if (this.enqueue(home, 0, id)) this.emit('log', { level: 'warn', message: `Start page is 404, trying the home page ${home}` });
+    }
     if (res.status >= 400) issues.unshift({ severity: 'error', code: `http-${res.status}`, message: `HTTP ${res.status}` });
     if (res.redirected_) issues.push({ severity: 'info', code: 'redirect', message: `Redirects to ${finalUrl}` });
     if (timeMs > 3000) issues.push({ severity: 'warn', code: 'slow', message: `Slow response (${timeMs} ms)` });
@@ -427,6 +536,8 @@ export class Crawler extends EventEmitter {
         external: links.filter((l) => l.kind === 'external').length,
         asset: links.filter((l) => l.kind === 'asset').length,
       },
+      archived: res.archivedAt ?? null,
+      archiveMissed: res.archiveMissed ?? false,
       issues,
     };
     this.pages.set(url, record);

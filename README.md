@@ -25,6 +25,13 @@ A fast, polite, concurrent web crawler with a living visual. Every crawler worke
 - **Streaming body reads** with a 6 MB cap, plus charset detection from headers and `<meta>`
 - Respects `<meta name="robots" content="nofollow">` and `rel="nofollow"`
 
+### When a site says "no"
+Many sites block crawlers with Cloudflare/Akamai bot walls. Arachne **does not try to sneak past bot protection**. Instead it keeps the show going:
+- **🕰 Time-travel**: when a page is refused (401/403/429/451/503, a Cloudflare challenge or a dead connection), the spiders fetch its public copy from the **Internet Archive's Wayback Machine**. Raw `id_` snapshots keep the original links, so the crawl continues "in the past". If the newest capture is itself a bot wall, the CDX index is asked for the latest real `200` capture. Once the start page is refused, the whole crawl switches to archive mode (politely, about one request per second). It can be turned off in Settings.
+- **🛡 Firewall scene**: refused pages become a glowing shield with a giant status code. The spiders chew its digits and bricks to pieces.
+- **Error pages are still read**: custom 404 pages usually contain site navigation, so the crawl carries on. A 404 start URL also retries the home page.
+- **🧪 Built-in sandbox**: type `sandbox` (or pick it on the home screen) to crawl *The Spider Atlas*. It is a generated site with 400+ pages, redirects, broken links, missing alt text and descriptions, a robots.txt disallow, and sitemap-only orphan pages. It always works, even offline.
+
 ### The audit
 Every page is checked for missing or overlong titles and descriptions, missing or multiple `<h1>`, missing alt text, canonical problems, `noindex`, thin content, missing Open Graph tags, heavy HTML, plain-HTTP pages, slow responses, redirects, and 4xx/5xx responses or failed requests. It also collects JSON-LD schema types, emails and the in-link graph.
 
@@ -68,7 +75,7 @@ npm run build
 npm start           # http://localhost:4173
 ```
 
-Open the app, paste a URL and hit **Release**. Want a safe playground? Try `books.toscrape.com` or `quotes.toscrape.com`.
+Open the app, paste a URL and hit **Release**. Want a guaranteed playground? Type `sandbox`, or try `books.toscrape.com` / `quotes.toscrape.com`.
 
 ### Configuration
 
@@ -84,6 +91,7 @@ Click the **settings** icon next to the URL bar:
 | Respect robots.txt | on | |
 | Seed from sitemap.xml | on | |
 | Include subdomains | off | `blog.example.com` counts as internal |
+| Time-travel | on | use the Internet Archive copy when a site refuses crawlers |
 
 Server environment variables:
 
@@ -118,6 +126,7 @@ server/
   crawler.js     worker pool, robots.txt, sitemaps, politeness, retries, redirects
   extract.js     HTML → metadata, links, SEO audit, and a reading-view snapshot
   url-utils.js   normalisation, scope rules, SSRF guard
+  sandbox.js     the built-in generated "Spider Atlas" website
 client/src/
   spider.ts      procedural spider: IK legs, gait, steering, rendering
   stage.ts       page sheets, camera, spider choreography, silk, flying links

@@ -264,6 +264,24 @@ export class Stage {
     this.crawlDone = true;
   }
 
+  /** visual "rewind" when the crawl switches to the Internet Archive */
+  timeWarp(label: string) {
+    const st = this.o.stage;
+    st.classList.remove('warp');
+    void st.offsetWidth;
+    st.classList.add('warp');
+    setTimeout(() => st.classList.remove('warp'), 1600);
+    const badge = document.createElement('div');
+    badge.className = 'warp-badge';
+    badge.textContent = label;
+    st.appendChild(badge);
+    setTimeout(() => badge.remove(), 2600);
+    const r = this.rect;
+    for (let i = 0; i < 6; i++) {
+      setTimeout(() => this.o.onRipple(r.left + r.width / 2, r.top + r.height / 2, 1.2 - i * 0.12), i * 140);
+    }
+  }
+
   private mountSheet(el: HTMLElement, phase: Phase) {
     const old = this.sheet;
     const oldCam = this.camY;
@@ -611,6 +629,12 @@ export class Stage {
       setTimeout(() => t.el.classList.remove('is-harvested'), 2400);
       return;
     }
+    if (t.el.dataset.fake) {
+      // firewall glyph: bitten to pieces, nothing to send to the feed
+      this.burst(t);
+      t.el.classList.add('is-chewed');
+      return;
+    }
     this.launchFlyer(t);
   }
 
@@ -898,7 +922,13 @@ export function buildSheet(p: PageEvent): HTMLElement {
     el('span', 'm-item', `${p.linkCounts?.internal ?? 0} int · ${p.linkCounts?.external ?? 0} ext`),
     el('span', 'm-item', `${p.words ?? 0} words`),
   );
+  if (p.archived) {
+    const d = p.archived;
+    meta.prepend(el('span', 'm-archive', `⟲ archived ${d.slice(0, 4)}-${d.slice(4, 6)}-${d.slice(6, 8)}`));
+  }
+  if (p.status === 0) meta.firstElementChild!.textContent = 'GET ERR';
   sheet.appendChild(meta);
+  if (p.status === 0 || p.status >= 400) return buildBlocked(sheet, p);
   sheet.appendChild(el('div', 'sheet-url', p.finalUrl ?? p.url));
   const blocks = p.snapshot.slice();
   if (!blocks.length || blocks[0].tag !== 'h1') {
@@ -907,14 +937,66 @@ export function buildSheet(p: PageEvent): HTMLElement {
   if (p.description && !blocks.slice(0, 4).some((b) => b.segments.map((s) => s.text).join('') === p.description)) {
     blocks.splice(1, 0, { tag: 'blockquote', segments: [{ text: p.description }] });
   }
-  if (p.status >= 400 || !p.snapshot.length) {
-    blocks.push({ tag: 'p', segments: [{ text: p.status >= 400 ? `The server answered ${p.status}. Nothing to read here, but the failure is logged.` : 'This response had no readable HTML body.' }] });
-  }
+  if (!p.snapshot.length) blocks.push({ tag: 'p', segments: [{ text: 'This response had no readable HTML body.' }] });
   renderBlocks(sheet, blocks, new Map(p.links.map((l) => [l.url, l.isNew])));
   return sheet;
 }
 
+/** A refused page becomes a firewall the spiders can chew on. */
+function buildBlocked(sheet: HTMLElement, p: PageEvent): HTMLElement {
+  sheet.classList.add('blocked');
+  sheet.appendChild(el('div', 'sheet-url', p.finalUrl ?? p.url));
+  const code = p.status ? String(p.status) : 'ERR';
+  const wall = el('div', 'b firewall');
+  let i = 0;
+  const glyph = (txt: string, cls: string) => {
+    const a = el('a', `lk k-external fw-glyph ${cls}`, txt);
+    a.dataset.k = 'external';
+    a.dataset.url = `#fw-${i++}`;
+    a.dataset.fake = '1';
+    a.setAttribute('role', 'presentation');
+    return a;
+  };
+  const digits = el('div', 'fw-code');
+  for (const ch of code) digits.appendChild(glyph(ch, 'fw-digit'));
+  wall.appendChild(digits);
+  const bricks = el('div', 'fw-bricks');
+  const words = p.status === 404 || p.status === 410
+    ? ['NOT', 'FOUND', 'DEAD', 'END', 'NO', 'THREAD', 'HERE', 'LOST']
+    : p.status === 0
+      ? ['NO', 'ROUTE', 'TIMEOUT', 'SILENCE', 'VOID', 'OFFLINE']
+      : ['ACCESS', 'DENIED', 'BOT', 'WALL', 'SHIELD', 'CHALLENGE', 'FORBIDDEN', 'GUARD'];
+  for (const w of words) bricks.appendChild(glyph(w, 'fw-brick'));
+  wall.appendChild(bricks);
+  sheet.appendChild(wall);
+
+  const server = (p.server ?? '').toLowerCase();
+  const guard = /cloudflare/.test(server) ? 'Cloudflare' : /akamai/.test(server) ? 'Akamai' : /sucuri/.test(server) ? 'Sucuri' : /imperva|incapsula/.test(server) ? 'Imperva' : '';
+  const title =
+    p.status === 404 ? 'This thread leads nowhere' :
+    p.status === 0 ? 'The web went silent' :
+    p.status === 429 ? 'Too many spiders, said the server' :
+    'The site raised its shield';
+  sheet.appendChild(el('h1', 'b b-h1', title));
+  const why =
+    p.status === 0 ? `The request failed: ${p.error ?? 'no response'}.` :
+    p.status === 404 ? 'The server says this page does not exist. Arachne still reads the error page for navigation links and tries the home page.' :
+    `${guard ? `Guarded by ${guard}. ` : ''}This site tells crawlers to keep out (HTTP ${p.status}). Arachne respects that and does not try to sneak past bot protection.`;
+  sheet.appendChild(el('p', 'b b-p', why));
+  if (p.archiveMissed) {
+    sheet.appendChild(el('p', 'b b-p fw-hint', 'Time-travel tried too: the Internet Archive has no usable copy of this page right now. Try another site, or the built-in sandbox from the home screen.'));
+  } else if (p.status !== 404) {
+    sheet.appendChild(el('p', 'b b-p fw-hint', 'Tip: with time-travel on (Settings), the spiders ask the Internet Archive for a public, older copy of a site that refuses them. Or try the built-in sandbox from the home screen.'));
+  }
+  if (p.snapshot.length) {
+    sheet.appendChild(el('h2', 'b b-h2', 'Found on the error page'));
+    renderBlocks(sheet, p.snapshot, new Map(p.links.map((l) => [l.url, l.isNew])));
+  }
+  return sheet;
+}
+
 const DEMOS: [string, string][] = [
+  ['sandbox — the built-in Spider Atlas, always works', 'sandbox'],
   ['books.toscrape.com', 'https://books.toscrape.com/'],
   ['quotes.toscrape.com', 'https://quotes.toscrape.com/'],
   ['en.wikipedia.org/wiki/Spider', 'https://en.wikipedia.org/wiki/Spider'],

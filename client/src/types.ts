@@ -52,6 +52,8 @@ export interface PageRecord {
   linkCounts?: { internal: number; external: number; asset: number };
   issues: Issue[];
   error?: string;
+  archived?: string | null;
+  archiveMissed?: boolean;
 }
 
 export interface PageEvent extends PageRecord {
@@ -103,6 +105,7 @@ export interface CrawlOptions {
   respectRobots: boolean;
   useSitemap: boolean;
   includeSubdomains: boolean;
+  archiveFallback: boolean;
   userAgent: string;
 }
 
@@ -115,4 +118,10 @@ export interface DoneEvent {
   reason: 'complete' | 'limit' | 'stopped' | 'error';
   pages: number;
   broken: number;
+}
+
+export interface ModeEvent {
+  mode: 'archive';
+  reason: string;
+  url: string;
 }

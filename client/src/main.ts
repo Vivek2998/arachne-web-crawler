@@ -3,7 +3,7 @@ import { Background } from './background';
 import { Stage, KIND_COLOR, type Harvest } from './stage';
 import { SiteGraph } from './graph';
 import { startCrawl, control, subscribe, exportUrl } from './api';
-import type { CrawlOptions, DoneEvent, FailEvent, FetchEvent, Issue, LogEvent, PageEvent, PageRecord, Stats } from './types';
+import type { CrawlOptions, ModeEvent, DoneEvent, FailEvent, FetchEvent, Issue, LogEvent, PageEvent, PageRecord, Stats } from './types';
 
 const $ = <T extends HTMLElement = HTMLElement>(sel: string) => document.querySelector<T>(sel)!;
 const h = <K extends keyof HTMLElementTagNameMap>(tag: K, cls?: string, text?: string | number) => {
@@ -23,6 +23,7 @@ const DEFAULTS: CrawlOptions = {
   respectRobots: true,
   useSitemap: true,
   includeSubdomains: false,
+  archiveFallback: true,
   userAgent: 'ArachneBot/1.0 (+https://github.com/Vivek2998/arachne-web-crawler)',
 };
 const SETTINGS_KEY = 'arachne:settings';
@@ -111,6 +112,7 @@ async function begin() {
       fail: onFail,
       stats: onStats,
       log: onLog,
+      mode: onMode,
       done: onDone,
     });
   } catch (e) {
@@ -160,6 +162,8 @@ function onFail(f: FailEvent) {
   graph.add(rec, []);
   addIssue(rec.issues[0], f.url);
   pushFeed(feedRow('fail', 'ERR', f.url, f.error));
+  // show the failure on stage too, so the spiders have something to attack
+  stage.enqueue({ ...rec, worker: f.worker, links: [], snapshot: [] });
   pagesDirty = issuesDirty = true;
 }
 
@@ -176,6 +180,12 @@ function onStats(s: Stats) {
   $('#hud-bar').style.width = `${Math.min(100, ((s.crawled + s.failed) / Math.max(1, s.maxPages)) * 100)}%`;
   btnPause.classList.toggle('is-paused', s.state === 'paused');
   btnPause.title = s.state === 'paused' ? 'Resume' : 'Pause';
+}
+
+function onMode(m: ModeEvent) {
+  if (m.mode !== 'archive') return;
+  toast(`🕰 Site refused the spiders (${m.reason}). Asking the Internet Archive for its copy…`, 'warn');
+  stage.timeWarp('⟲ TIME-TRAVEL · INTERNET ARCHIVE');
 }
 
 function onLog(l: LogEvent) {
@@ -201,18 +211,19 @@ function setRunningUI(running: boolean) {
 }
 
 // ------------------------------------------------------------------ address bar
-function setAddress(url: string, status: number | null) {
+function setAddress(url: string, status: number | null, archived = false) {
   $('#addr-url').textContent = url;
   const chip = $('#addr-status');
   chip.hidden = status === null;
   if (status !== null) {
     chip.textContent = status ? String(status) : 'ERR';
+    if (archived) chip.textContent += ' · ARCHIVE';
     chip.className = `chip ${status >= 200 && status < 300 ? 'ok' : status >= 300 && status < 400 ? 'warn' : 'bad'}`;
   }
 }
 function showAddress(p: PageEvent | null) {
   if (!p) return setAddress('arachne://idle', null);
-  setAddress(p.finalUrl ?? p.url, p.status);
+  setAddress(p.finalUrl ?? p.url, p.status, Boolean(p.archived));
 }
 
 // ------------------------------------------------------------------ feed
@@ -283,6 +294,7 @@ const LABELS: Record<string, string> = {
   slow: 'Slow response (> 3 s)',
   truncated: 'Body truncated (> 6 MB)',
   'fetch-failed': 'Request failed',
+  archived: 'Read from the Internet Archive',
 };
 function addIssue(i: Issue, url: string) {
   const label = LABELS[i.code] ?? (i.code.startsWith('http-') ? `HTTP ${i.code.slice(5)} responses` : i.message);
